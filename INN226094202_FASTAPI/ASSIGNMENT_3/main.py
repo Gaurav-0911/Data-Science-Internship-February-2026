@@ -1,104 +1,156 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Response, status, Query
 from pydantic import BaseModel
 
 app = FastAPI()
 
-# Product Model
-class Product(BaseModel):
+# Initial products
+products = [
+    {"id": 1, "name": "Wireless Mouse", "price": 499, "category": "Electronics", "in_stock": True},
+    {"id": 2, "name": "Notebook", "price": 99, "category": "Stationery", "in_stock": True},
+    {"id": 3, "name": "USB Hub", "price": 799, "category": "Electronics", "in_stock": False},
+    {"id": 4, "name": "Pen Set", "price": 49, "category": "Stationery", "in_stock": True},
+]
+
+# Model for new product
+class NewProduct(BaseModel):
     name: str
     price: int
     category: str
-    in_stock: bool
-
-# Initial Data
-products = [
-    {"id": 1, "name": "Keyboard", "price": 799, "category": "Electronics", "in_stock": True},
-    {"id": 2, "name": "Notebook", "price": 99, "category": "Stationery", "in_stock": True},
-    {"id": 3, "name": "USB Hub", "price": 599, "category": "Electronics", "in_stock": False},
-    {"id": 4, "name": "Pen Set", "price": 199, "category": "Stationery", "in_stock": True},
-]
-
-next_id = 5
+    in_stock: bool = True
 
 
-# GET ALL PRODUCTS
+# Helper function
+def find_product(product_id):
+    for p in products:
+        if p["id"] == product_id:
+            return p
+    return None
+
+
+# GET all products
 @app.get("/products")
 def get_products():
-    return {
-        "total": len(products),
-        "items": products
-    }
+    return {"products": products, "total": len(products)}
 
 
-# ADD PRODUCT
+# POST add product
 @app.post("/products", status_code=201)
-def add_product(product: Product):
-    global next_id
+def add_product(product: NewProduct, response: Response):
 
     for p in products:
         if p["name"].lower() == product.name.lower():
-            raise HTTPException(status_code=400, detail="Product already exists")
+            response.status_code = status.HTTP_400_BAD_REQUEST
+            return {"error": "Product already exists"}
+
+    next_id = max(p["id"] for p in products) + 1
 
     new_product = {
         "id": next_id,
-        **product.dict()
+        "name": product.name,
+        "price": product.price,
+        "category": product.category,
+        "in_stock": product.in_stock
     }
 
     products.append(new_product)
-    next_id += 1
 
-    return new_product
+    return {"message": "Product added", "product": new_product}
 
 
-# UPDATE PRODUCT
+# GET audit
+@app.get("/products/audit")
+def product_audit():
+
+    in_stock_list = [p for p in products if p["in_stock"]]
+    out_stock_list = [p for p in products if not p["in_stock"]]
+
+    stock_value = sum(p["price"] * 10 for p in in_stock_list)
+
+    priciest = max(products, key=lambda p: p["price"])
+
+    return {
+        "total_products": len(products),
+        "in_stock_count": len(in_stock_list),
+        "out_of_stock_names": [p["name"] for p in out_stock_list],
+        "total_stock_value": stock_value,
+        "most_expensive": {
+            "name": priciest["name"],
+            "price": priciest["price"]
+        }
+    }
+
+
+# BONUS discount endpoint
+@app.put("/products/discount")
+def bulk_discount(
+    category: str = Query(...),
+    discount_percent: int = Query(..., ge=1, le=99)
+):
+
+    updated = []
+
+    for p in products:
+        if p["category"] == category:
+            p["price"] = int(p["price"] * (1 - discount_percent / 100))
+            updated.append(p)
+
+    if not updated:
+        return {"message": f"No products found in category: {category}"}
+
+    return {
+        "message": f"{discount_percent}% discount applied to {category}",
+        "updated_count": len(updated),
+        "updated_products": updated,
+    }
+
+
+# GET product by id
+@app.get("/products/{product_id}")
+def get_product(product_id: int, response: Response):
+
+    product = find_product(product_id)
+
+    if not product:
+        response.status_code = status.HTTP_404_NOT_FOUND
+        return {"error": "Product not found"}
+
+    return product
+
+
+# PUT update product
 @app.put("/products/{product_id}")
 def update_product(
     product_id: int,
-    price: int = Query(None),
-    in_stock: bool = Query(None)
+    price: int | None = None,
+    in_stock: bool | None = None,
+    response: Response = None
 ):
 
-    for product in products:
-        if product["id"] == product_id:
+    product = find_product(product_id)
 
-            if price is not None:
-                product["price"] = price
+    if not product:
+        response.status_code = status.HTTP_404_NOT_FOUND
+        return {"error": "Product not found"}
 
-            if in_stock is not None:
-                product["in_stock"] = in_stock
+    if price is not None:
+        product["price"] = price
 
-            return {"message": "Product updated", "product": product}
+    if in_stock is not None:
+        product["in_stock"] = in_stock
 
-    raise HTTPException(status_code=404, detail="Product not found")
+    return {"message": "Product updated", "product": product}
 
 
-# DELETE PRODUCT
+# DELETE product
 @app.delete("/products/{product_id}")
-def delete_product(product_id: int):
+def delete_product(product_id: int, response: Response):
 
-    for product in products:
-        if product["id"] == product_id:
-            products.remove(product)
-            return {"message": f'{product["name"]} deleted'}
+    product = find_product(product_id)
 
-    raise HTTPException(status_code=404, detail="Product not found")
+    if not product:
+        response.status_code = status.HTTP_404_NOT_FOUND
+        return {"error": "Product not found"}
 
+    products.remove(product)
 
-# AUDIT REPORT
-@app.get("/products/audit")
-def audit_products():
-
-    total_products = len(products)
-
-    in_stock_count = sum(1 for p in products if p["in_stock"])
-
-    total_stock_value = sum(p["price"] for p in products if p["in_stock"])
-
-    most_expensive = max(products, key=lambda x: x["price"])
-
-    return {
-        "total_products": total_products,
-        "in_stock_products": in_stock_count,
-        "stock_value": total_stock_value,
-        "most_expensive_product": most_expensive
-    }
+    return {"message": f"Product '{product['name']}' deleted"}
